@@ -7,6 +7,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/Image.h>
 #include <lucrezio_simulation_environments/LogicalImage.h>
+#include <std_msgs/UInt32.h>
 
 #include "tf/tf.h"
 #include "tf/transform_listener.h"
@@ -21,7 +22,11 @@
 
 #include <lucrezio_semantic_perception/ImageBoundingBoxesArray.h>
 
+#include <fstream>
+
 bool keep_going=true;
+typedef std::vector<lucrezio_simulation_environments::Model> Models;
+
 
 class ImageDumper{
 public:
@@ -56,25 +61,118 @@ public:
       return;
     }
 
-    _rgb_image = rgb_cv_ptr->image.clone();
-    int rgb_rows=_rgb_image.rows;
-    int rgb_cols=_rgb_image.cols;
-    std::string rgb_type=type2str(_rgb_image.type());
+    cv::Mat rgb_image = rgb_cv_ptr->image.clone();
+    int rgb_rows=rgb_image.rows;
+    int rgb_cols=rgb_image.cols;
+    std::string rgb_type=type2str(rgb_image.type());
     ROS_INFO("Got %dx%d %s image",rgb_cols,rgb_rows,rgb_type.c_str());
 
     //saving rgb image
-    cv::imwrite("rgb_image.png",_rgb_image);
+    cv::imwrite("rgb_image.png",rgb_image);
 
-    _depth_image = depth_cv_ptr->image.clone();
-    int depth_rows=_depth_image.rows;
-    int depth_cols=_depth_image.cols;
-    std::string depth_type=type2str(_depth_image.type());
+    cv::Mat depth_image = depth_cv_ptr->image.clone();
+    int depth_rows=depth_image.rows;
+    int depth_cols=depth_image.cols;
+    std::string depth_type=type2str(depth_image.type());
     ROS_INFO("Got %dx%d %s image",depth_cols,depth_rows,depth_type.c_str());
 
     //saving depth image
     cv::Mat temp;
-    convert_32FC1_to_16UC1(temp,_depth_image);
+    convert_32FC1_to_16UC1(temp,depth_image);
     cv::imwrite("depth_image.pgm",temp);
+
+    //output file
+    std::ofstream data;
+    data.open("data.txt");
+
+    //Listen to camera pose
+    tf::TransformListener listener;
+    tf::StampedTransform rgbd_camera_pose;
+    try {
+      listener.waitForTransform("map",
+                                "camera_depth_optical_frame",
+                                ros::Time(0),
+                                ros::Duration(3));
+      listener.lookupTransform("map",
+                               "camera_depth_optical_frame",
+                               ros::Time(0),
+                               rgbd_camera_pose);
+    }
+    catch(tf::TransformException ex) {
+      ROS_ERROR("%s", ex.what());
+    }
+
+    //save camera pose
+    const Eigen::Isometry3f rgbd_camera_transform=tfTransform2eigen(rgbd_camera_pose);
+    data << rgbd_camera_transform.translation().x() << " "
+         << rgbd_camera_transform.translation().y() << " "
+         << rgbd_camera_transform.translation().z() << " ";
+
+    const Eigen::Matrix3f rgbd_camera_rotation = rgbd_camera_transform.linear().matrix();
+    data << rgbd_camera_rotation(0,0) << " "
+         << rgbd_camera_rotation(0,1) << " "
+         << rgbd_camera_rotation(0,2) << " "
+         << rgbd_camera_rotation(1,0) << " "
+         << rgbd_camera_rotation(1,1) << " "
+         << rgbd_camera_rotation(1,2) << " "
+         << rgbd_camera_rotation(2,0) << " "
+         << rgbd_camera_rotation(2,1) << " "
+         << rgbd_camera_rotation(2,2) << std::endl;
+
+    //save logical image
+    tf::StampedTransform logical_camera_pose;
+    tf::poseMsgToTF(logical_image_msg->pose,logical_camera_pose);
+
+    const Eigen::Isometry3f logical_camera_transform=tfTransform2eigen(logical_camera_pose);
+    data << logical_camera_transform.translation().x() << " "
+         << logical_camera_transform.translation().y() << " "
+         << logical_camera_transform.translation().z() << " ";
+
+    const Eigen::Matrix3f logical_camera_rotation = logical_camera_transform.linear().matrix();
+    data << logical_camera_rotation(0,0) << " "
+         << logical_camera_rotation(0,1) << " "
+         << logical_camera_rotation(0,2) << " "
+         << logical_camera_rotation(1,0) << " "
+         << logical_camera_rotation(1,1) << " "
+         << logical_camera_rotation(1,2) << " "
+         << logical_camera_rotation(2,0) << " "
+         << logical_camera_rotation(2,1) << " "
+         << logical_camera_rotation(2,2) << std::endl;
+
+    const Models &models=logical_image_msg->models;
+    int num_models=models.size();
+    data << num_models << std::endl;
+
+    for(int i=0; i<num_models; ++i){
+      const lucrezio_simulation_environments::Model &model = models[i];
+      data << model.type << " ";
+      tf::StampedTransform model_pose;
+      tf::poseMsgToTF(model.pose,model_pose);
+      const Eigen::Isometry3f model_transform=tfTransform2eigen(model_pose);
+      data << model_transform.translation().x() << " "
+           << model_transform.translation().y() << " "
+           << model_transform.translation().z() << " ";
+
+      const Eigen::Matrix3f model_rotation = model_transform.linear().matrix();
+      data << model_rotation(0,0) << " "
+           << model_rotation(0,1) << " "
+           << model_rotation(0,2) << " "
+           << model_rotation(1,0) << " "
+           << model_rotation(1,1) << " "
+           << model_rotation(1,2) << " "
+           << model_rotation(2,0) << " "
+           << model_rotation(2,1) << " "
+           << model_rotation(2,2) << " ";
+
+      data << model.min.x << " "
+           << model.min.y << " "
+           << model.min.z << " "
+           << model.max.x << " "
+           << model.max.y << " "
+           << model.max.z << std::endl;
+
+    }
+    data.close();
     
     //stop the node
     keep_going=false;
@@ -82,10 +180,6 @@ public:
 
 protected:
   ros::NodeHandle _nh;
-
-  tf::TransformListener _listener;
-  cv::Mat _rgb_image,_depth_image;
-  Eigen::Isometry3f _depth_camera_transform,_inverse_depth_camera_transform;
 
   message_filters::Subscriber<lucrezio_simulation_environments::LogicalImage> _logical_image_sub;
   message_filters::Subscriber<sensor_msgs::Image> _depth_image_sub;
