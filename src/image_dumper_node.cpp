@@ -9,8 +9,9 @@
 #include <lucrezio_simulation_environments/LogicalImage.h>
 #include <std_msgs/UInt32.h>
 
+#include <gazebo_msgs/GetModelState.h>
+
 #include "tf/tf.h"
-#include "tf/transform_listener.h"
 #include "tf/transform_datatypes.h"
 
 #include <message_filters/subscriber.h>
@@ -38,6 +39,8 @@ public:
     _synchronizer(FilterSyncPolicy(10),_logical_image_sub,_depth_image_sub,_rgb_image_sub){
 
     _synchronizer.registerCallback(boost::bind(&ImageDumper::filterCallback, this, _1, _2, _3));
+
+    _model_state_client = _nh.serviceClient<gazebo_msgs::GetModelState>("gazebo/get_model_state");
 
     ROS_INFO("Starting image dumper node!");
   }
@@ -86,24 +89,21 @@ public:
     data.open("data.txt");
 
     //Listen to camera pose
-    tf::TransformListener listener;
-    tf::StampedTransform rgbd_camera_pose;
-    try {
-      listener.waitForTransform("map",
-                                "camera_depth_optical_frame",
-                                ros::Time(0),
-                                ros::Duration(3));
-      listener.lookupTransform("map",
-                               "camera_depth_optical_frame",
-                               ros::Time(0),
-                               rgbd_camera_pose);
-    }
-    catch(tf::TransformException ex) {
-      ROS_ERROR("%s", ex.what());
-    }
+    gazebo_msgs::GetModelState model_state;
+    model_state.request.model_name = "robot";
+    tf::StampedTransform robot_pose;
+    if(_model_state_client.call(model_state)){
+      ROS_INFO("Received robot model state!");
+      tf::poseMsgToTF(model_state.response.pose,robot_pose);
+    }else
+      ROS_ERROR("Failed to call service gazebo/get_model_state");
+
+    Eigen::Isometry3f rgbd_camera_pose = Eigen::Isometry3f::Identity();
+    rgbd_camera_pose.translation() = Eigen::Vector3f(0.0,0.0,0.5);
+    rgbd_camera_pose.linear() = Eigen::Quaternionf(0.5,-0.5,0.5,-0.5).toRotationMatrix();
 
     //save camera pose
-    const Eigen::Isometry3f rgbd_camera_transform=tfTransform2eigen(rgbd_camera_pose);
+    const Eigen::Isometry3f rgbd_camera_transform=tfTransform2eigen(robot_pose)*rgbd_camera_pose;
     data << rgbd_camera_transform.translation().x() << " "
          << rgbd_camera_transform.translation().y() << " "
          << rgbd_camera_transform.translation().z() << " ";
@@ -188,6 +188,8 @@ protected:
                                                           sensor_msgs::Image,
                                                           sensor_msgs::Image> FilterSyncPolicy;
   message_filters::Synchronizer<FilterSyncPolicy> _synchronizer;
+
+  ros::ServiceClient _model_state_client;
 
 private:
   Eigen::Isometry3f tfTransform2eigen(const tf::Transform& p){
